@@ -30,12 +30,14 @@ fi
 echo "testOnly: absent (OK)"
 echo "note: lspatch .so libs live in assets/ (injected into patched Discord APK at runtime)"
 
+APK_BASENAME="$(basename "$APK")"
+cp "$APK" "$OUT_DIR/$APK_BASENAME"
 (
   cd "$OUT_DIR"
-  sha256sum "$(basename "$APK")" > SHA256SUMS.txt
+  sha256sum "$APK_BASENAME" > SHA256SUMS.txt
   cat > apk-metadata.json << JSON
 {
-  "apk": "$(basename "$APK")",
+  "apk": "$APK_BASENAME",
   "sha256": "$(awk '{print $1}' SHA256SUMS.txt)",
   "package": "$EXPECT_PACKAGE",
   "minSdk": $MIN_SDK,
