@@ -1,0 +1,18 @@
+# Rain OP7 upstream baseline (2026-08-13)
+# Components mapped for the OP7 Android build (B1 repository discovery):
+rain_repo: https://github.com/ra1ncord/rain            # TS Discord client core -> JS/bytecode bundle
+rain_branch: main
+rain_commit: f25936479cdf57b777d54d1e4e22624262996b4d
+rainManager_repo: https://github.com/ra1ncord/rainManager  # Android patcher app (the deliverable APK)
+rainManager_branch: main
+rainManager_commit: 4c01d85a7b0b6b668be27c16439af15b4959138c
+rainXposed_repo: https://github.com/ra1ncord/rainXposed    # Xposed injection module (fetched at runtime by manager; reference pin)
+rainXposed_commit: 83752a64f113ba1663ca7f6a58c85cfe2565ab0a
+RainTweak_repo: https://github.com/ra1ncord/RainTweak      # iOS-only (Theos); EXCLUDED from OP7 Android build
+manager_package: dev.raincord.manager
+manager_version: v1.0.1 (versionCode 1010)
+manager_min_sdk: 28
+manager_target_sdk: 36
+manager_toolchain: JDK 21, Gradle 8.14.3, AGP 8.11.0, Kotlin 2.2.0, Compose
+rain_build: bun install && bun run build --release-branch=main --build-bytecode
+licenses: OSL-3.0 (rainManager), MPL-2.0 (rain)

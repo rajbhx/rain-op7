@@ -1,0 +1,323 @@
+name: OP7 Build
+
+# Rain OP7 pipeline (Phases 3, 9). Two independent deliverables:
+#   1. `rain-bundle` job — rain TS client core -> dist/rain.js (+ .hbc bytecode)
+#   2. `manager` job     — rainManager Android patcher APK (the app users install)
+# Each mirrors its pinned upstream commit, applies the OP7 patch layer (fail=stop),
+# builds with the upstream toolchain, and passes aapt badging gates.
+# release=true publishes from the `release` job under the `release` environment.
+#
+# Security: workflow_dispatch only (maintainers). PRs from untrusted forks never
+# reach this workflow or its secrets.
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_commit:
+        description: 'rainManager commit to build (default: pinned in upstream/rainManager/commit.txt)'
+        required: false
+        default: ''
+      rain_commit:
+        description: 'rain bundle commit to build (default: pinned in upstream/rain/commit.txt)'
+        required: false
+        default: ''
+      patch_ref:
+        description: 'Ref of this repo to test; default = default branch'
+        required: false
+        default: ''
+      release:
+        description: 'Create a GitHub Release (requires release_tag + release secrets)'
+        required: false
+        default: 'false'
+      release_tag:
+        description: 'Release tag, format op7-rain-<version>-r<rev> (required if release=true)'
+        required: false
+        default: ''
+      fast:
+        description: 'Fast validation build (assembleDebug only); use for iteration'
+        required: false
+        default: 'true'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: op7-build-${{ github.event.inputs.upstream_commit || 'pinned' }}
+  cancel-in-progress: false
+
+jobs:
+  rain-bundle:
+    name: Build rain bundle (JS + bytecode)
+    runs-on: ubuntu-latest
+    outputs:
+      rain_commit: ${{ steps.resolve.outputs.rain_commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.patch_ref || '' }}
+
+      - name: Resolve rain commit
+        id: resolve
+        run: |
+          RAIN_COMMIT="${{ github.event.inputs.rain_commit }}"
+          if [[ -z "$RAIN_COMMIT" ]]; then
+            RAIN_COMMIT="$(cat upstream/rain/commit.txt)"
+          fi
+          echo "rain_commit=$RAIN_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout rain at pinned commit
+        run: |
+          git clone https://github.com/ra1ncord/rain.git mirror-rain
+          git -C mirror-rain checkout "${{ steps.resolve.outputs.rain_commit }}"
+          echo "rain commit: $(git -C mirror-rain rev-parse HEAD)"
+
+      - name: Apply OP7 patches (rain)
+        run: |
+          cd mirror-rain
+          OP7_LAYER_DIR="$GITHUB_WORKSPACE" PATCH_SET=rain "$GITHUB_WORKSPACE/automation/op7/apply_patches.sh"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache Bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-rain-${{ hashFiles('mirror-rain/bun.lock') }}
+          restore-keys: |
+            bun-rain-
+
+      - name: Install dependencies
+        run: |
+          cd mirror-rain
+          CI=1 bun install --frozen-lockfile
+
+      - name: Build bundle (as upstream Forgejo CI)
+        run: |
+          cd mirror-rain
+          CI=1 bun run build --release-branch=main --build-bytecode
+          ls -la dist/
+
+      - name: Upload rain bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: rain-bundle
+          path: |
+            mirror-rain/dist/rain.js
+            mirror-rain/dist/rain.hbc
+          retention-days: 14
+
+  manager:
+    name: Mirror, patch, build, validate (rainManager APK)
+    runs-on: ubuntu-latest
+    outputs:
+      upstream_commit: ${{ steps.resolve.outputs.upstream_commit }}
+      version_name: ${{ steps.metadata.outputs.version_name }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.patch_ref || '' }}
+
+      - name: Resolve rainManager commit and release inputs
+        id: resolve
+        run: |
+          if [[ -n "${{ github.event.inputs.upstream_commit }}" ]]; then
+            UPSTREAM_COMMIT="${{ github.event.inputs.upstream_commit }}"
+          else
+            UPSTREAM_COMMIT="$(cat upstream/rainManager/commit.txt)"
+          fi
+          echo "upstream_commit=$UPSTREAM_COMMIT" >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.event.inputs.release }}" == "true" ]]; then
+            TAG="${{ github.event.inputs.release_tag }}"
+            if [[ -z "$TAG" ]]; then
+              echo "::error::release=true requires release_tag (format op7-rain-<version>-r<rev>)"
+              exit 1
+            fi
+            echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout rainManager at pinned commit
+        run: |
+          git clone https://github.com/ra1ncord/rainManager.git mirror
+          git -C mirror checkout "${{ steps.resolve.outputs.upstream_commit }}"
+          echo "rainManager commit: $(git -C mirror rev-parse HEAD)"
+
+      - name: Apply OP7 patches (rainManager)
+        run: |
+          cd mirror
+          OP7_LAYER_DIR="$GITHUB_WORKSPACE" PATCH_SET=op7 "$GITHUB_WORKSPACE/automation/op7/apply_patches.sh"
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: 21
+          distribution: zulu
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Collect build metadata
+        id: metadata
+        run: |
+          REV="$(tr -d '[:space:]' < op7-revision.txt)"
+          VERSION_NAME="rain-manager-v1.0.1-op7r${REV}"
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          cat > build-metadata.json << JSON
+          {
+            "project": "rain-op7",
+            "component": "rainManager",
+            "upstream_commit": "${{ steps.resolve.outputs.upstream_commit }}",
+            "op7_revision": "r$REV",
+            "version_name": "$VERSION_NAME",
+            "package": "dev.raincord.manager",
+            "min_sdk": 28,
+            "target_sdk": 36,
+            "build": "${{ github.event.inputs.fast == 'true' && 'fast (assembleDebug)' || 'full (debug+staging, R8)' }}",
+            "run_id": "${{ github.run_id }}"
+          }
+          JSON
+          cat build-metadata.json
+
+      - name: Build APK (Gradle)
+        run: |
+          cd mirror
+          if [[ "${{ github.event.inputs.fast }}" == "true" ]]; then
+            ./gradlew :app:assembleDebug --stacktrace
+          else
+            ./gradlew :app:assembleDebug :app:assembleStaging --stacktrace
+          fi
+
+      - name: Discover APK and validate (aapt badging gate)
+        id: validate
+        run: |
+          APK="$(find mirror/app/build/outputs/apk -name '*.apk' | sort | head -n 1)"
+          [[ -n "$APK" ]] || { echo "::error::no APK produced"; exit 1; }
+          echo "apk=$APK" >> "$GITHUB_OUTPUT"
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+          cp "$APK" "dist-$(basename "$APK")"
+          "$GITHUB_WORKSPACE/automation/op7/validate_apk.sh" "$APK" "$GITHUB_WORKSPACE"
+
+      - name: Upload validation artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: op7-validation-${{ steps.metadata.outputs.version_name }}
+          path: |
+            ${{ env.APK_PATH }}
+            SHA256SUMS.txt
+            apk-metadata.json
+            build-metadata.json
+          retention-days: 7
+
+      - name: Resolve build-tools version
+        id: buildtools
+        if: secrets.DEBUG_SIGNING_KEY != ''
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          BT="$(find "$SDK_ROOT/build-tools/" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V | tail -n 1)"
+          echo "BUILD_TOOLS_VERSION=$BT" >> "$GITHUB_ENV"
+          echo "using build-tools $BT"
+
+      - name: Re-sign APK with stable debug key (validation builds)
+        if: github.event.inputs.release != 'true' && secrets.DEBUG_SIGNING_KEY != ''
+        uses: abhijitvalluri/sign-apks@v0.8
+        env:
+          BUILD_TOOLS_VERSION: ${{ env.BUILD_TOOLS_VERSION }}
+        with:
+          releaseDirectory: ${{ github.workspace }}/
+          signingKeyBase64: ${{ secrets.DEBUG_SIGNING_KEY }}
+          alias: ${{ secrets.DEBUG_ALIAS }}
+          keyStorePassword: ${{ secrets.DEBUG_KEY_STORE_PASSWORD }}
+          keyPassword: ${{ secrets.DEBUG_KEY_PASSWORD }}
+
+      - name: Upload installable APK (validation builds)
+        if: github.event.inputs.release != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: op7-signed-${{ steps.metadata.outputs.version_name }}
+          path: |
+            ${{ github.workspace }}/dist-*.apk
+            SHA256SUMS.txt
+            apk-metadata.json
+            build-metadata.json
+          retention-days: 14
+
+      - name: Write job summary
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY'
+          ## OP7 build report — Rain
+          - rainManager commit: `${{ steps.resolve.outputs.upstream_commit }}`
+          - rain bundle commit: `${{ github.event.inputs.rain_commit || 'pinned' }}`
+          - version: `${{ steps.metadata.outputs.version_name }}`
+          - validation: aapt badging + SDK + testOnly gate + SHA-256
+          - build mode: ${{ github.event.inputs.fast == 'true' && 'fast (assembleDebug)' || 'full (debug+staging, R8)' }}
+          SUMMARY
+
+  release:
+    name: Sign with release key and publish
+    needs: [manager, rain-bundle]
+    if: github.event.inputs.release == 'true'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Guard release secrets
+        run: |
+          for SECRET in OP7_RELEASE_KEYSTORE_BASE64 OP7_RELEASE_KEYSTORE_PASSWORD OP7_RELEASE_KEY_ALIAS OP7_RELEASE_KEY_PASSWORD; do
+            if [[ -z "${!SECRET:-}" ]]; then
+              echo "::error::$SECRET is not configured; refusing to publish"
+              exit 1
+            fi
+          done
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: op7-validation-${{ needs.manager.outputs.version_name }}
+          path: release-artifacts
+
+      - name: Resolve build-tools version
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          BT="$(find "$SDK_ROOT/build-tools/" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V | tail -n 1)"
+          echo "BUILD_TOOLS_VERSION=$BT" >> "$GITHUB_ENV"
+          echo "using build-tools $BT"
+
+      - name: Sign APK with dedicated release key
+        uses: abhijitvalluri/sign-apks@v0.8
+        env:
+          BUILD_TOOLS_VERSION: ${{ env.BUILD_TOOLS_VERSION }}
+        with:
+          releaseDirectory: release-artifacts/
+          signingKeyBase64: ${{ secrets.OP7_RELEASE_KEYSTORE_BASE64 }}
+          alias: ${{ secrets.OP7_RELEASE_KEY_ALIAS }}
+          keyStorePassword: ${{ secrets.OP7_RELEASE_KEYSTORE_PASSWORD }}
+          keyPassword: ${{ secrets.OP7_RELEASE_KEY_PASSWORD }}
+
+      - name: Final checksums and metadata
+        run: |
+          cd release-artifacts
+          sha256sum ./*.apk | tee SHA256SUMS.txt
+          ls -la
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.manager.outputs.release_tag }}
+          name: "Rain OP7 ${{ needs.manager.outputs.version_name }}"
+          body: |
+            ## Rain OP7 release
+            - rainManager commit: `${{ needs.manager.outputs.upstream_commit }}`
+            - rain bundle commit: `${{ needs.rain-bundle.outputs.rain_commit }}`
+            - version: `${{ needs.manager.outputs.version_name }}`
+            - target: OnePlus 7 · Android 10 OK (minSdk 28) · arm64-v8a patched Discord output
+            - artifacts: APK + `SHA256SUMS.txt` + `apk-metadata.json` + `build-metadata.json`
+          files: |
+            release-artifacts/*.apk
+            release-artifacts/SHA256SUMS.txt
+            release-artifacts/apk-metadata.json
+            release-artifacts/build-metadata.json
+          fail_on_unmatched_files: true

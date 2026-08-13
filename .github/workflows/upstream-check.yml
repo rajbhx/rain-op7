@@ -1,0 +1,103 @@
+name: Upstream Check
+
+# Lightweight upstream change detection (Phase 4). NEVER builds.
+# Compares pinned commits against ra1ncord/rain and ra1ncord/rainManager main;
+# when changed: opens a sync issue and dispatches op7-build with the new commits.
+
+on:
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+  repository_dispatch:
+    types: [upstream-check]
+
+permissions:
+  contents: read
+  issues: write
+  actions: write
+
+jobs:
+  check:
+    name: Detect upstream changes
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+      new_rain: ${{ steps.check.outputs.new_rain }}
+      new_manager: ${{ steps.check.outputs.new_manager }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: check
+        name: Compare upstream HEADs with pins
+        run: |
+          set +e
+          OUT="$(./automation/op7/check_upstream.sh 2>&1)"
+          RC=$?
+          set -e
+          echo "$OUT"
+          if [[ $RC -eq 1 ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            NR="$(printf '%s\n' "$OUT" | sed -n 's/^new_head_rain=//p')"
+            NM="$(printf '%s\n' "$OUT" | sed -n 's/^new_head_rainManager=//p')"
+            [[ -n "$NR" ]] && echo "new_rain=$NR" >> "$GITHUB_OUTPUT"
+            [[ -n "$NM" ]] && echo "new_manager=$NM" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            if [[ $RC -eq 2 ]]; then
+              echo "::warning::upstream unreachable during scheduled check"
+            fi
+          fi
+
+      - name: Write summary
+        if: always()
+        run: |
+          PR=$(tr -d '[:space:]' < upstream/rain/commit.txt)
+          PM=$(tr -d '[:space:]' < upstream/rainManager/commit.txt)
+          {
+            echo "## Upstream check — Rain"
+            echo "- rain pinned: \`$PR\`"
+            echo "- rainManager pinned: \`$PM\`"
+            echo "- result: ${{ steps.check.outputs.changed == 'true' && 'new upstream commit(s)' || 'no change' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  sync:
+    name: Trigger OP7 build on new upstream
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Open sync issue
+        run: |
+          if ! gh issue list --search "upstream sync available" --state open --json number --jq '.[0].number' | grep -q .; then
+            gh issue create \
+              --title "Upstream sync available: rain/rainManager" \
+              --body "New upstream commits detected:
+              - rain: ${{ needs.check.outputs.new_rain || 'unchanged' }}
+              - rainManager: ${{ needs.check.outputs.new_manager || 'unchanged' }}
+
+              The op7-build pipeline has been dispatched. If patches conflict,
+              publishing stops and this issue records the failure for maintenance."
+          else
+            echo "sync issue already open; skipping creation"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Dispatch op7-build
+        run: |
+          ARGS=(-f fast=true)
+          [[ -n "${{ needs.check.outputs.new_rain }}" ]] && ARGS+=(-f rain_commit="${{ needs.check.outputs.new_rain }}")
+          [[ -n "${{ needs.check.outputs.new_manager }}" ]] && ARGS+=(-f upstream_commit="${{ needs.check.outputs.new_manager }}")
+          gh workflow run op7-build.yml "${ARGS[@]}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Write summary
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY'
+          ## Sync dispatched
+          - pipeline: `op7-build.yml` (fast validation)
+          - conflict policy: any patch failure stops publishing and is reported in the issue above.
+          SUMMARY
