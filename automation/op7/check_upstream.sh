@@ -5,7 +5,6 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-CHANGED=0
 
 check_one() {
   local repo="$1" pinfile="$2" label="$3"
