@@ -1,16 +1,43 @@
-# Rain OP7 field notes (schema per playbook: id/problem/cause/solution/tags)
-- id: RAIN1
-  problem: "which ra1ncord repos are actually needed for the Android build was ambiguous"
-  cause: "org has rain (TS), rainManager (Kotlin), rainXposed (Kotlin), RainTweak (C++)"
-  solution: "mapped ecosystem - deliverable APK = rainManager; bundle = rain; rainXposed runtime-fetched; RainTweak iOS-only excluded"
-  tags: [architecture, repository-discovery, discord]
-- id: RAIN2
-  problem: "rainManager ships no native-code entries in badging (lspatch .so live in assets)"
-  cause: "lspatch runtime is injected into the patched Discord APK, not used by the manager itself"
-  solution: "validation gate for the manager checks package/SDK/testOnly only; patched-output ABI is inherited from Discord (arm64-v8a on OP7)"
-  tags: [abi, lspatch, badging]
-- id: RAIN3
-  problem: "upstream rain CI runs on Codeberg Forgejo, not GitHub"
-  cause: "canonical repo is codeberg raincord; GitHub ra1ncord is a mirror"
-  solution: "reuse the exact build command (bun run build --release-branch=main --build-bytecode) on GitHub Actions; pin GitHub mirror commits"
-  tags: [ci, forgejo, github-actions, mirror]
+# Rain OP7 field notes (schema per playbook: sections > entries)
+# Auto-consumed by the playbook sync workflow; short and factual.
+sections:
+- id: A
+  title: Repository discovery & architecture
+  entries:
+  - id: RAIN1
+    problem: which ra1ncord repos are actually needed for the Android build was ambiguous
+    cause: org has rain (TS), rainManager (Kotlin), rainXposed (Kotlin), RainTweak
+      (C++)
+    solution: mapped ecosystem - deliverable APK = rainManager; bundle = rain; rainXposed
+      runtime-fetched; RainTweak iOS-only excluded
+    tags:
+    - architecture
+    - repository-discovery
+    - discord
+- id: B
+  title: Build, validation & ABI
+  entries:
+  - id: RAIN2
+    problem: rainManager ships no native-code entries in badging (lspatch .so live
+      in assets)
+    cause: lspatch runtime is injected into the patched Discord APK, not used by the
+      manager itself
+    solution: validation gate for the manager checks package/SDK/testOnly only; patched-output
+      ABI is inherited from Discord (arm64-v8a on OP7)
+    tags:
+    - abi
+    - lspatch
+    - badging
+- id: C
+  title: CI infrastructure
+  entries:
+  - id: RAIN3
+    problem: upstream rain CI runs on Codeberg Forgejo, not GitHub
+    cause: canonical repo is codeberg raincord; GitHub ra1ncord is a mirror
+    solution: reuse the exact build command (bun run build --release-branch=main --build-bytecode)
+      on GitHub Actions; pin GitHub mirror commits
+    tags:
+    - ci
+    - forgejo
+    - github-actions
+    - mirror
