@@ -17,11 +17,6 @@ sections:
         cause: "lspatch runtime is injected into the patched Discord APK, not used by the manager itself"
         solution: "validation gate for the manager checks package/SDK/testOnly only; patched-output ABI is inherited from Discord (arm64-v8a on OP7)"
         tags: [abi, lspatch, badging]
-      - id: B1
-        problem: "rainManager ships no native-code entries in badging (lspatch .so live in assets)"
-        cause: "lspatch runtime is injected into the patched Discord APK, not used by the manager itself"
-        solution: "validation gate for the manager checks package/SDK/testOnly only; patched-output ABI is inherited from Discord (arm64-v8a on OP7)"
-        tags: [[abi, lspatch, badging]]
   - id: C
     title: CI infrastructure
     entries:
